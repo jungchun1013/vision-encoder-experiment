@@ -41,3 +41,4 @@ A tiny pipline to run experiments on vision encoders
 - Linear probe
 - Progressing Masking
 - t-sne
+- RSA/CKA

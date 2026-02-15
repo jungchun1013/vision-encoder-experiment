@@ -7,11 +7,16 @@ from wrappers.encoder import BaseEncoder
 
 
 @torch.no_grad()
-def _extract_all(encoder: BaseEncoder, loader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
+def _extract_all(encoder: BaseEncoder, loader: DataLoader,
+                 layer: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """Extract features and labels for an entire dataloader."""
     all_features, all_labels = [], []
-    for images, labels in tqdm(loader, desc=f"Extracting ({encoder.name})", leave=False):
-        features = encoder.extract_features(images)
+    desc = f"Extracting ({encoder.name}" + (f", {layer})" if layer else ")")
+    for images, labels in tqdm(loader, desc=desc, leave=False):
+        if layer:
+            features = encoder.extract_features_from_layer(images, layer)
+        else:
+            features = encoder.extract_features(images)
         all_features.append(features.cpu())
         all_labels.append(labels)
     return torch.cat(all_features), torch.cat(all_labels)
@@ -23,13 +28,14 @@ def knn_evaluate(
     test_loader: DataLoader,
     k: int = 20,
     num_classes: int | None = None,
+    layer: str | None = None,
 ) -> dict:
     """k-NN evaluation with cosine similarity and weighted voting.
 
     Returns dict with 'accuracy' and 'k'.
     """
-    train_features, train_labels = _extract_all(encoder, train_loader)
-    test_features, test_labels = _extract_all(encoder, test_loader)
+    train_features, train_labels = _extract_all(encoder, train_loader, layer=layer)
+    test_features, test_labels = _extract_all(encoder, test_loader, layer=layer)
 
     # L2-normalize for cosine similarity
     train_features = F.normalize(train_features, dim=1)

@@ -1,80 +1,247 @@
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import torch
 
 import models  # triggers all @register decorators
 from models.registry import get_encoder, list_encoders
-from datasets.loader import get_loaders, get_num_classes
+from datasets.loader import get_dataset, get_loaders, get_num_classes
 from tasks.knn import knn_evaluate
 from tasks.linear_probe import linear_probe_evaluate
-
+from tasks.tsne import tsne_evaluate
+from tasks.masking import masking_evaluate
+from tasks.cka import cka_cross_encoder, cka_cross_layer
+from tasks.reconstruction import mae_reconstruction_evaluate, retrieval_reconstruction_evaluate
 
 TASKS = {
     "knn": "k-NN",
     "linear_probe": "Linear Probe",
+    "tsne": "t-SNE",
+    "masking": "Masking",
+    "cka": "CKA",
+    "reconstruction": "Reconstruction",
 }
 
+OUTPUT_ROOT = Path(__file__).resolve().parent / "output"
 
-def run_single(encoder_name: str, task: str, args) -> dict:
+
+def _detect_block_layers(encoder) -> list[str]:
+    """Auto-detect top-level block layers for an encoder."""
+    all_layers = encoder.list_layers()
+    layers = [l for l in all_layers
+              if (l.startswith("blocks.") and l.count(".") == 1)                          # timm ViT
+              or (l.startswith("encoder.layer.") and l.count(".") == 2)                    # HF MAE
+              or (l.startswith("visual.transformer.resblocks.") and l.count(".") == 3)     # OpenCLIP
+              or (l.startswith("layer") and l.count(".") == 0)]                            # ResNet
+    if not layers:
+        layers = [l for l in all_layers if l.count(".") == 0]
+    return layers
+
+
+def run_single(encoder_name: str, task: str, args, layer: str | None = None) -> dict:
     """Run a single encoder + task combination. Returns results dict."""
     encoder = get_encoder(encoder_name, device=args.device)
+    layer_info = f"  |  Layer: {layer}" if layer else ""
     print(f"\n{'='*60}")
-    print(f"Encoder: {encoder.name}  |  Task: {TASKS[task]}  |  Dataset: {args.dataset}")
+    print(f"Encoder: {encoder.name}  |  Task: {TASKS[task]}  |  Dataset: {args.dataset}{layer_info}")
     print(f"{'='*60}")
 
     print(f"Loading model...")
     transform = encoder.get_transform()
 
     print(f"Loading dataset...")
-    train_loader, test_loader = get_loaders(
-        args.dataset, transform, batch_size=args.batch_size, data_root=args.data_root,
-    )
-
     num_classes = get_num_classes(args.dataset)
     start = time.time()
 
     if task == "knn":
-        results = knn_evaluate(encoder, train_loader, test_loader, num_classes=num_classes)
+        train_loader, test_loader = get_loaders(
+            args.dataset, transform, batch_size=args.batch_size, data_root=args.data_root,
+        )
+        results = knn_evaluate(encoder, train_loader, test_loader,
+                               num_classes=num_classes, layer=layer)
+
     elif task == "linear_probe":
+        train_loader, test_loader = get_loaders(
+            args.dataset, transform, batch_size=args.batch_size, data_root=args.data_root,
+        )
         results = linear_probe_evaluate(
             encoder, train_loader, test_loader,
-            num_classes=num_classes, epochs=args.epochs,
+            num_classes=num_classes, epochs=args.epochs, layer=layer,
         )
+
+    elif task == "tsne":
+        from torch.utils.data import DataLoader
+        test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
+                                 num_workers=4, pin_memory=True)
+        out_dir = OUTPUT_ROOT / "tsne"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = tsne_evaluate(
+            encoder, test_loader, args.dataset, num_classes, out_dir,
+            layer=layer, max_samples=args.max_samples, perplexity=args.perplexity,
+        )
+
+    elif task == "masking":
+        train_ds = get_dataset(args.dataset, train=True, transform=transform, data_root=args.data_root)
+        test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
+        out_dir = OUTPUT_ROOT / "masking"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = masking_evaluate(
+            encoder, train_ds, test_ds, args.dataset, num_classes, out_dir,
+            batch_size=args.batch_size, patch_size=args.patch_size,
+        )
+
+    elif task == "reconstruction":
+        out_dir = OUTPUT_ROOT / "reconstruction"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if encoder_name == "mae":
+            # MAE: actual pixel reconstruction via encoder+decoder
+            from torch.utils.data import DataLoader
+            test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
+            test_loader = DataLoader(test_ds, batch_size=args.num_images, shuffle=True,
+                                     num_workers=4, pin_memory=True)
+            results = mae_reconstruction_evaluate(
+                encoder, test_loader, args.dataset, out_dir,
+                num_images=args.num_images, mask_ratio=args.mask_ratio,
+            )
+        else:
+            # Other encoders: nearest-neighbor retrieval
+            train_loader, test_loader = get_loaders(
+                args.dataset, transform, batch_size=args.batch_size, data_root=args.data_root,
+            )
+            results = retrieval_reconstruction_evaluate(
+                encoder, train_loader, test_loader, args.dataset, out_dir,
+                num_queries=args.num_images, layer=layer,
+            )
 
     elapsed = time.time() - start
     results["time_sec"] = round(elapsed, 1)
     results["encoder"] = encoder.name
+    if layer:
+        results["layer"] = layer
     return results
 
 
 def print_results_table(all_results: list[dict], task: str):
     """Pretty-print a results table."""
-    print(f"\n{'='*60}")
+    if "accuracy" not in all_results[0]:
+        return
+    has_layer = any(r.get("layer") for r in all_results)
+    print(f"\n{'='*70}")
     print(f"Results: {TASKS[task]}")
-    print(f"{'='*60}")
-    print(f"{'Encoder':<20} {'Accuracy':>10} {'Time (s)':>10}")
-    print(f"{'-'*20} {'-'*10} {'-'*10}")
-    for r in sorted(all_results, key=lambda x: x["accuracy"], reverse=True):
-        print(f"{r['encoder']:<20} {r['accuracy']:>10.4f} {r['time_sec']:>10.1f}")
+    print(f"{'='*70}")
+    if has_layer:
+        print(f"{'Encoder':<20} {'Layer':<25} {'Accuracy':>10} {'Time (s)':>10}")
+        print(f"{'-'*20} {'-'*25} {'-'*10} {'-'*10}")
+        for r in sorted(all_results, key=lambda x: x.get("accuracy", 0), reverse=True):
+            layer = r.get("layer", "-")
+            print(f"{r['encoder']:<20} {layer:<25} {r['accuracy']:>10.4f} {r['time_sec']:>10.1f}")
+    else:
+        print(f"{'Encoder':<20} {'Accuracy':>10} {'Time (s)':>10}")
+        print(f"{'-'*20} {'-'*10} {'-'*10}")
+        for r in sorted(all_results, key=lambda x: x.get("accuracy", 0), reverse=True):
+            print(f"{r['encoder']:<20} {r['accuracy']:>10.4f} {r['time_sec']:>10.1f}")
     print()
+
+
+def _run_cka(encoder_names: list[str], args):
+    """Run CKA analysis: cross-encoder or cross-layer."""
+    from torch.utils.data import DataLoader
+
+    out_dir = OUTPUT_ROOT / "cka"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    start = time.time()
+
+    if args.layers:
+        # Cross-layer mode: single encoder, multiple layers
+        enc_name = encoder_names[0]
+        encoder = get_encoder(enc_name, device=args.device)
+        transform = encoder.get_transform()
+        test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
+        loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
+                            num_workers=4, pin_memory=True)
+
+        # --layers all: auto-detect block-level layers
+        if "all" in args.layers:
+            layers = _detect_block_layers(encoder)
+            print(f"\nAuto-detected {len(layers)} layers: {layers}")
+        else:
+            layers = args.layers
+
+        print(f"\nCross-layer CKA: {encoder.name} — {len(layers)} layers")
+        result = cka_cross_layer(
+            encoder, loader, layers, args.dataset, out_dir,
+            max_samples=args.max_samples,
+        )
+    else:
+        # Cross-encoder mode: multiple encoders
+        if len(encoder_names) < 2:
+            print("CKA cross-encoder mode requires at least 2 encoders.")
+            print("  Use: --encoder dinov2 clip resnet")
+            print("  Or for cross-layer: --encoder dinov2 --layers blocks.0 blocks.6 blocks.11")
+            return
+
+        encoders = []
+        loaders = {}
+        for name in encoder_names:
+            try:
+                enc = get_encoder(name, device=args.device)
+                transform = enc.get_transform()
+                test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
+                loaders[enc.name] = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
+                                               num_workers=4, pin_memory=True)
+                encoders.append(enc)
+            except NotImplementedError as e:
+                print(f"  [SKIP] {name}: {e}")
+
+        print(f"\nCross-encoder CKA: {[e.name for e in encoders]}")
+        result = cka_cross_encoder(
+            encoders, loaders, args.dataset, out_dir,
+            max_samples=args.max_samples,
+        )
+
+    elapsed = time.time() - start
+    print(f"\nDone in {elapsed:.1f}s")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Vision Encoder Testbed")
-    parser.add_argument("--encoder", type=str, default="dinov2",
-                        help=f"Encoder name or 'all'. Available: {', '.join(list_encoders())}")
+    parser.add_argument("--encoder", type=str, nargs="+", default=["dinov2"],
+                        help=f"Encoder name(s) or 'all'. Available: {', '.join(list_encoders())}")
     parser.add_argument("--task", type=str, default="knn", choices=list(TASKS),
-                        help="Downstream task")
+                        help="Task to run")
     parser.add_argument("--dataset", type=str, default="cifar10",
                         help="Dataset name (cifar10, stl10, flowers102, food101, oxfordpets)")
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--epochs", type=int, default=50, help="Epochs for linear probe")
     parser.add_argument("--device", type=str, default=None,
                         help="Device (auto-detect if not set)")
     parser.add_argument("--data-root", type=str, default=None,
                         help="Root directory for datasets")
+    # linear_probe args
+    parser.add_argument("--epochs", type=int, default=50, help="Epochs for linear probe")
+    # tsne args
+    parser.add_argument("--layer", type=str, default=None,
+                        help="Extract from a specific layer (e.g. 'blocks.5', 'layer3'), or 'all' for every block")
+    parser.add_argument("--list-layers", action="store_true",
+                        help="Print available layer names for the encoder(s) and exit")
+    parser.add_argument("--max-samples", type=int, default=5000,
+                        help="Max samples for t-SNE")
+    parser.add_argument("--perplexity", type=float, default=30,
+                        help="t-SNE perplexity")
+    # masking args
+    parser.add_argument("--patch-size", type=int, default=16,
+                        help="Patch size for masking (pixels)")
+    # reconstruction args
+    parser.add_argument("--num-images", type=int, default=8,
+                        help="Number of images for reconstruction visualization")
+    parser.add_argument("--mask-ratio", type=float, default=0.75,
+                        help="Mask ratio for MAE reconstruction")
+    # cka args
+    parser.add_argument("--layers", type=str, nargs="+", default=None,
+                        help="Layers for cross-layer CKA (e.g. blocks.0 blocks.3 blocks.6 blocks.11)")
     args = parser.parse_args()
 
     if args.device is None:
@@ -82,17 +249,52 @@ def main():
     print(f"Device: {args.device}")
 
     # Determine which encoders to run
-    if args.encoder == "all":
+    if "all" in args.encoder:
         encoder_names = list_encoders()
     else:
-        encoder_names = [args.encoder]
+        encoder_names = args.encoder
 
+    # --list-layers mode
+    if args.list_layers:
+        for enc_name in encoder_names:
+            try:
+                encoder = get_encoder(enc_name, device=args.device)
+                layers = encoder.list_layers()
+                print(f"\n{encoder.name} — {len(layers)} layers:")
+                for l in layers:
+                    print(f"  {l}")
+            except NotImplementedError as e:
+                print(f"\n  [SKIP] {enc_name}: {e}")
+        return
+
+    # CKA is a multi-encoder/multi-layer comparison — handle separately
+    if args.task == "cka":
+        _run_cka(encoder_names, args)
+        return
+
+    # Expand --layer all: detect block layers per encoder and iterate
     all_results = []
     for name in encoder_names:
         try:
-            result = run_single(name, args.task, args)
-            all_results.append(result)
-            print(f"  -> {result['encoder']}: accuracy={result['accuracy']:.4f} ({result['time_sec']}s)")
+            if args.layer == "all":
+                encoder = get_encoder(name, device=args.device)
+                layer_list = _detect_block_layers(encoder)
+                print(f"\n{encoder.name}: auto-detected {len(layer_list)} layers")
+                del encoder  # free memory, run_single will reload
+                for layer in layer_list:
+                    result = run_single(name, args.task, args, layer=layer)
+                    all_results.append(result)
+                    if "accuracy" in result:
+                        print(f"  -> {result['encoder']} @ {layer}: accuracy={result['accuracy']:.4f} ({result['time_sec']}s)")
+                    else:
+                        print(f"  -> {result['encoder']} @ {layer}: done ({result['time_sec']}s)")
+            else:
+                result = run_single(name, args.task, args, layer=args.layer)
+                all_results.append(result)
+                if "accuracy" in result:
+                    print(f"  -> {result['encoder']}: accuracy={result['accuracy']:.4f} ({result['time_sec']}s)")
+                else:
+                    print(f"  -> {result['encoder']}: done ({result['time_sec']}s)")
         except NotImplementedError as e:
             print(f"\n  [SKIP] {name}: {e}")
         except Exception as e:
@@ -100,7 +302,7 @@ def main():
 
     if len(all_results) > 1:
         print_results_table(all_results, args.task)
-    elif len(all_results) == 1:
+    elif len(all_results) == 1 and "accuracy" in all_results[0]:
         r = all_results[0]
         print(f"\nFinal: {r['encoder']} accuracy = {r['accuracy']:.4f}")
 

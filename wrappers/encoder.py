@@ -67,6 +67,12 @@ class BaseEncoder(ABC):
         finally:
             handle.remove()
 
+        if "out" not in activation:
+            raise RuntimeError(
+                f"Layer '{layer}' was not reached during forward pass. "
+                f"It may belong to an unused branch (e.g. text encoder). "
+                f"Use --list-layers to find valid layers."
+            )
         out = activation["out"]
         if isinstance(out, tuple):
             out = out[0]

@@ -8,11 +8,16 @@ from wrappers.encoder import BaseEncoder
 
 
 @torch.no_grad()
-def _extract_all(encoder: BaseEncoder, loader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
+def _extract_all(encoder: BaseEncoder, loader: DataLoader,
+                 layer: str | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     """Extract features and labels for an entire dataloader."""
     all_features, all_labels = [], []
-    for images, labels in tqdm(loader, desc=f"Extracting ({encoder.name})", leave=False):
-        features = encoder.extract_features(images)
+    desc = f"Extracting ({encoder.name}" + (f", {layer})" if layer else ")")
+    for images, labels in tqdm(loader, desc=desc, leave=False):
+        if layer:
+            features = encoder.extract_features_from_layer(images, layer)
+        else:
+            features = encoder.extract_features(images)
         all_features.append(features.cpu())
         all_labels.append(labels)
     return torch.cat(all_features), torch.cat(all_labels)
@@ -27,6 +32,7 @@ def linear_probe_evaluate(
     lr: float = 0.1,
     batch_size: int = 256,
     device: str | None = None,
+    layer: str | None = None,
 ) -> dict:
     """Linear probe: freeze encoder, train nn.Linear on extracted features.
 
@@ -35,9 +41,12 @@ def linear_probe_evaluate(
     device = device or encoder.device
 
     # Pre-extract all features (once)
-    print("Pre-extracting features for linear probe...")
-    train_features, train_labels = _extract_all(encoder, train_loader)
-    test_features, test_labels = _extract_all(encoder, test_loader)
+    layer_info = f" @ {layer}" if layer else ""
+    print(f"Pre-extracting features for linear probe{layer_info}...")
+    train_features, train_labels = _extract_all(encoder, train_loader, layer=layer)
+    test_features, test_labels = _extract_all(encoder, test_loader, layer=layer)
+
+    feature_dim = train_features.shape[1]
 
     # Build feature dataloaders
     train_ds = TensorDataset(train_features, train_labels)
@@ -46,7 +55,7 @@ def linear_probe_evaluate(
     feat_test = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     # Linear head
-    head = nn.Linear(encoder.feature_dim, num_classes).to(device)
+    head = nn.Linear(feature_dim, num_classes).to(device)
     optimizer = torch.optim.SGD(head.parameters(), lr=lr, momentum=0.9, weight_decay=0)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
