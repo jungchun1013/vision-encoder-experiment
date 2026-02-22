@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader
 
 import models  # triggers all @register decorators
 from models.registry import get_encoder, list_encoders
@@ -14,6 +15,10 @@ from tasks.tsne import tsne_evaluate
 from tasks.masking import masking_evaluate
 from tasks.cka import cka_cross_encoder, cka_cross_layer
 from tasks.reconstruction import mae_reconstruction_evaluate, retrieval_reconstruction_evaluate
+from tasks.attention_masking import attention_masking_visualize
+from tasks.clip_masking_alignment import clip_masking_alignment
+from tasks.finetune import finetune_evaluate, _build_train_transform
+from tasks.color_tsne import color_tsne_evaluate
 
 TASKS = {
     "knn": "k-NN",
@@ -22,6 +27,10 @@ TASKS = {
     "masking": "Masking",
     "cka": "CKA",
     "reconstruction": "Reconstruction",
+    "attention_masking": "Attention Masking",
+    "clip_alignment": "CLIP Masking Alignment",
+    "finetune": "Fine-tune",
+    "color_tsne": "Color t-SNE",
 }
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "output"
@@ -71,6 +80,21 @@ def run_single(encoder_name: str, task: str, args, layer: str | None = None) -> 
             num_classes=num_classes, epochs=args.epochs, layer=layer,
         )
 
+    elif task == "finetune":
+        train_transform = _build_train_transform(transform)
+        train_loader = DataLoader(
+            get_dataset(args.dataset, train=True, transform=train_transform, data_root=args.data_root),
+            batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True,
+        )
+        test_loader = DataLoader(
+            get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root),
+            batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True,
+        )
+        results = finetune_evaluate(
+            encoder, train_loader, test_loader,
+            num_classes=num_classes, epochs=args.ft_epochs, lr=args.ft_lr,
+        )
+
     elif task == "tsne":
         from torch.utils.data import DataLoader
         test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
@@ -83,6 +107,13 @@ def run_single(encoder_name: str, task: str, args, layer: str | None = None) -> 
             layer=layer, max_samples=args.max_samples, perplexity=args.perplexity,
         )
 
+    elif task == "color_tsne":
+        out_dir = OUTPUT_ROOT / "color_tsne"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = color_tsne_evaluate(encoder, out_dir, color_space=args.color_space,
+                                      reduction=args.reduction,
+                                      perplexity=args.perplexity)
+
     elif task == "masking":
         train_ds = get_dataset(args.dataset, train=True, transform=transform, data_root=args.data_root)
         test_ds = get_dataset(args.dataset, train=False, transform=transform, data_root=args.data_root)
@@ -91,6 +122,7 @@ def run_single(encoder_name: str, task: str, args, layer: str | None = None) -> 
         results = masking_evaluate(
             encoder, train_ds, test_ds, args.dataset, num_classes, out_dir,
             batch_size=args.batch_size, patch_size=args.patch_size,
+            layer=layer,
         )
 
     elif task == "reconstruction":
@@ -231,6 +263,11 @@ def main():
                         help="Max samples for t-SNE")
     parser.add_argument("--perplexity", type=float, default=30,
                         help="t-SNE perplexity")
+    # color_tsne args
+    parser.add_argument("--color-space", type=str, default="rgb", choices=["rgb", "hsv"],
+                        help="Color space for color_tsne sampling (rgb or hsv)")
+    parser.add_argument("--reduction", type=str, default="tsne", choices=["tsne", "pca"],
+                        help="Dimensionality reduction method for color_tsne")
     # masking args
     parser.add_argument("--patch-size", type=int, default=16,
                         help="Patch size for masking (pixels)")
@@ -239,6 +276,9 @@ def main():
                         help="Number of images for reconstruction visualization")
     parser.add_argument("--mask-ratio", type=float, default=0.75,
                         help="Mask ratio for MAE reconstruction")
+    # finetune args
+    parser.add_argument("--ft-lr", type=float, default=1e-4, help="Learning rate for fine-tuning")
+    parser.add_argument("--ft-epochs", type=int, default=20, help="Epochs for fine-tuning")
     # cka args
     parser.add_argument("--layers", type=str, nargs="+", default=None,
                         help="Layers for cross-layer CKA (e.g. blocks.0 blocks.3 blocks.6 blocks.11)")
@@ -267,9 +307,36 @@ def main():
                 print(f"\n  [SKIP] {enc_name}: {e}")
         return
 
-    # CKA is a multi-encoder/multi-layer comparison — handle separately
+    # Multi-encoder tasks — handle separately
     if args.task == "cka":
         _run_cka(encoder_names, args)
+        return
+
+    if args.task == "attention_masking":
+        out_dir = OUTPUT_ROOT / "attention_masking"
+        start = time.time()
+        result = attention_masking_visualize(
+            encoder_names, args.dataset, out_dir,
+            device=args.device,
+            mask_ratios=[0.0, 0.25, 0.5, 0.75],
+            image_indices=list(range(args.num_images)),
+            data_root=args.data_root,
+        )
+        elapsed = time.time() - start
+        print(f"\nDone in {elapsed:.1f}s — saved {len(result.get('plots', []))} figures")
+        return
+
+    if args.task == "clip_alignment":
+        out_dir = OUTPUT_ROOT / "clip_alignment"
+        start = time.time()
+        result = clip_masking_alignment(
+            args.dataset, out_dir,
+            device=args.device,
+            num_images=args.num_images,
+            data_root=args.data_root,
+        )
+        elapsed = time.time() - start
+        print(f"\nDone in {elapsed:.1f}s")
         return
 
     # Expand --layer all: detect block layers per encoder and iterate

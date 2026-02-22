@@ -39,9 +39,11 @@ def _extract_features(encoder: BaseEncoder, loader: DataLoader,
     return features.numpy(), labels.numpy()
 
 
-def _run_tsne(features: np.ndarray, perplexity: float = 30, seed: int = 42) -> np.ndarray:
-    """Run t-SNE on features, return 2D embeddings."""
-    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=seed, init="pca")
+def _run_tsne(features: np.ndarray, perplexity: float = 30, seed: int = 42,
+              n_components: int = 2) -> np.ndarray:
+    """Run t-SNE on features, return embeddings of shape [N, n_components]."""
+    tsne = TSNE(n_components=n_components, perplexity=perplexity,
+                random_state=seed, init="pca")
     return tsne.fit_transform(features)
 
 

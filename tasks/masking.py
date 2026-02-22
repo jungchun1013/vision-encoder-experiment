@@ -57,13 +57,15 @@ def masking_evaluate(
     batch_size: int = 64,
     patch_size: int = 16,
     num_workers: int = 4,
+    layer: str | None = None,
 ) -> dict:
     """Run progressive masking and save a line plot. Returns metadata dict."""
     mask_ratios = [round(r * 0.1, 1) for r in range(10)]
     accs = []
 
+    layer_info = f" @ {layer}" if layer else ""
     for ratio in mask_ratios:
-        print(f"  mask_ratio={ratio:.1f} ... ", end="", flush=True)
+        print(f"  mask_ratio={ratio:.1f}{layer_info} ... ", end="", flush=True)
 
         masked_train = PatchMaskedDataset(train_dataset, mask_ratio=ratio, patch_size=patch_size)
         masked_test = PatchMaskedDataset(test_dataset, mask_ratio=ratio, patch_size=patch_size)
@@ -77,18 +79,22 @@ def masking_evaluate(
             num_workers=num_workers, pin_memory=True,
         )
 
-        result = knn_evaluate(encoder, train_loader, test_loader, num_classes=num_classes)
+        result = knn_evaluate(encoder, train_loader, test_loader,
+                              num_classes=num_classes, layer=layer)
         acc = result["accuracy"]
         accs.append(acc)
         print(f"acc={acc:.4f}")
 
     # Plot
+    label = f"{encoder.name}{layer_info}"
     enc_tag = encoder.name.lower().replace("-", "_").replace(" ", "_")
+    if layer:
+        enc_tag += f"_{layer.replace('.', '_')}"
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(mask_ratios, accs, marker="o", linewidth=2, markersize=6, label=encoder.name)
+    ax.plot(mask_ratios, accs, marker="o", linewidth=2, markersize=6, label=label)
     ax.set_xlabel("Mask Ratio", fontsize=13)
     ax.set_ylabel("k-NN Accuracy", fontsize=13)
-    ax.set_title(f"Progressive Patch Masking — {encoder.name} — {dataset_name}", fontsize=14)
+    ax.set_title(f"Progressive Patch Masking — {label} — {dataset_name}", fontsize=14)
     ax.set_xticks(mask_ratios)
     ax.set_ylim(0, 1.0)
     ax.legend(fontsize=11)
@@ -102,6 +108,7 @@ def masking_evaluate(
 
     return {
         "encoder": encoder.name,
+        "layer": layer,
         "plot": str(save_path),
         "accuracies": dict(zip(mask_ratios, accs)),
     }
