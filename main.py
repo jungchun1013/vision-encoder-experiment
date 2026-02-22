@@ -19,6 +19,7 @@ from tasks.attention_masking import attention_masking_visualize
 from tasks.clip_masking_alignment import clip_masking_alignment
 from tasks.finetune import finetune_evaluate, _build_train_transform
 from tasks.color_tsne import color_tsne_evaluate
+from tasks.clock_tsne import clock_tsne_evaluate
 
 TASKS = {
     "knn": "k-NN",
@@ -31,6 +32,7 @@ TASKS = {
     "clip_alignment": "CLIP Masking Alignment",
     "finetune": "Fine-tune",
     "color_tsne": "Color t-SNE",
+    "clock_tsne": "Clock t-SNE",
 }
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "output"
@@ -113,6 +115,13 @@ def run_single(encoder_name: str, task: str, args, layer: str | None = None) -> 
         results = color_tsne_evaluate(encoder, out_dir, color_space=args.color_space,
                                       reduction=args.reduction,
                                       perplexity=args.perplexity)
+
+    elif task == "clock_tsne":
+        out_dir = OUTPUT_ROOT / "clock_tsne"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results = clock_tsne_evaluate(encoder, out_dir, reduction=args.reduction,
+                                      perplexity=args.perplexity,
+                                      layers=args.layers)
 
     elif task == "masking":
         train_ds = get_dataset(args.dataset, train=True, transform=transform, data_root=args.data_root)
