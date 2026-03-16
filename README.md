@@ -1,6 +1,7 @@
-# Vision Encoder Experiments
+# Vision Encoder Experiment Toolkit
 
-A tiny pipline to run experiments on vision encoders
+A minimal pipline to run experiments on vision encoders
+A side project to practice Claude Code :)
 
 ## Models
 - CLIP
@@ -12,7 +13,7 @@ A tiny pipline to run experiments on vision encoders
 - ViT-supervised
 - I-JEPA
 - LLAVA vision tower
-- QWen-2-VL
+- QWen-2-VL vision encoder
 - SimCLR (requried download)
 
 
@@ -31,7 +32,7 @@ A tiny pipline to run experiments on vision encoders
   │   ├── linear_probe.py
   │   ├── knn.py
   │   ├── finetune.py
-  │   └── retrieval.py
+  │   └── ...
   ├── datasets/        # dataset loading helpers
   │   └── loader.py
   ├── main.py          # entry point
@@ -45,3 +46,4 @@ A tiny pipline to run experiments on vision encoders
 - t-sne
 - RSA/CKA
 - color representation
+- fragment segmentation
