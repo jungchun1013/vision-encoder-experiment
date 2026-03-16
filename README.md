@@ -1,6 +1,7 @@
 # Vision Encoder Experiment Toolkit
 
 A minimal pipline to run experiments on vision encoders
+
 A side project to practice Claude Code :)
 
 ## Models
