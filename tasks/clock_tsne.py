@@ -5,8 +5,8 @@ Single plot (or multi-layer subplots) showing how an encoder organises
 
 HSV colouring scheme
 --------------------
-* Hue        — minute value (0-59 → 0–1)
-* Saturation — hour value (0-11 → 0.4–1.0)
+* Hue        — hour value (0-11 → 0–1, circular)
+* Saturation — minute value (0-59 → 1.0–0.3, vivid→muted)
 * Value      — always 1.0
 """
 
@@ -71,11 +71,11 @@ def _reduce(features, reduction, perplexity):
 
 
 def _make_colors(hours, minutes):
-    """HSV colours: hue=minute, saturation=hour."""
-    sat_min, sat_max = 0.4, 1.0
+    """HSV colours: hue=hour (circular), saturation=minute (vivid→muted)."""
+    sat_max, sat_min = 1.0, 0.3
     return np.array([
-        hsv_to_rgb(m / 60.0, sat_min + (h / 11.0) * (sat_max - sat_min), 1.0)
-        for m, h in zip(minutes, hours)
+        hsv_to_rgb(h / 12.0, sat_max - (m / 59.0) * (sat_max - sat_min), 1.0)
+        for h, m in zip(hours, minutes)
     ])
 
 
@@ -94,7 +94,11 @@ def _minute_edges(hours, minutes):
         next_m = (m + 1) % 60
         idx_b = lookup.get((h, next_m))
         if idx_b is not None:
+            print(f"({h}, {m}) -> ({h}, {next_m})")
             edges.append((idx_a, idx_b))
+        else:
+            print(f"({h}, {m}) -> No next minute")
+    
     return edges
 
 
@@ -110,20 +114,18 @@ def _style_ax(ax, emb, colors, title, hours, minutes):
         segments.append([emb[a], emb[b]])
         edge_colors.append((colors[a] + colors[b]) / 2)
     lc = LineCollection(segments, colors=edge_colors,
-                        linewidths=0.5, alpha=0.3, zorder=1)
+                        linewidths=1.0, alpha=0.4, zorder=1)
     ax.add_collection(lc)
 
     ax.scatter(emb[:, 0], emb[:, 1], c=colors, s=14, alpha=0.9,
                edgecolors="none", zorder=2)
 
-    # compact legend: 3 hour levels x first-minute swatch
-    sat_min, sat_max = 0.4, 1.0
-    for h in [0, 6, 11]:
-        sat = sat_min + (h / 11.0) * (sat_max - sat_min)
+    # compact legend: sample hours as hue swatches (full saturation)
+    for h in [0, 3, 6, 9]:
+        c = hsv_to_rgb(h / 12.0, 1.0, 1.0)
         label_h = 12 if h == 0 else h
-        c = hsv_to_rgb(0.0, sat, 1.0)
-        ax.scatter([], [], c=[c], s=25, label=f"h{label_h}")
-    ax.legend(loc="lower center", ncol=3, fontsize=7,
+        ax.scatter([], [], c=[c], s=25, label=f"{label_h}:00")
+    ax.legend(loc="lower center", ncol=4, fontsize=7,
               frameon=False, labelcolor="white",
               bbox_to_anchor=(0.5, -0.06))
 
@@ -192,10 +194,7 @@ def clock_tsne_evaluate(
         _style_ax(ax, emb, colors, title, hours, minutes)
 
     suptitle = f"{encoder.name} — Clock {red_label}  ({n} images)"
-    if n_plots > 1:
-        suptitle += "\nhue = minute (0-59)  |  saturation = hour (0.4-1.0)"
-    else:
-        suptitle += "\nhue = minute (0-59)  |  saturation = hour (0.4-1.0)"
+    suptitle += "\nhue = hour  |  saturation = minute (1.0→0.3)"
     fig.suptitle(suptitle, fontsize=14, fontweight="bold", color="white", y=1.03)
     fig.tight_layout()
 

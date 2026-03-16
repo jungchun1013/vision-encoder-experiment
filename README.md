@@ -10,7 +10,9 @@ A tiny pipline to run experiments on vision encoders
 - ResNet
 - SigLIP
 - ViT-supervised
-- I-JEPA (requried download)
+- I-JEPA
+- LLAVA vision tower
+- QWen-2-VL
 - SimCLR (requried download)
 
 
@@ -42,3 +44,4 @@ A tiny pipline to run experiments on vision encoders
 - Progressing Masking
 - t-sne
 - RSA/CKA
+- color representation

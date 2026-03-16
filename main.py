@@ -20,6 +20,7 @@ from tasks.clip_masking_alignment import clip_masking_alignment
 from tasks.finetune import finetune_evaluate, _build_train_transform
 from tasks.color_tsne import color_tsne_evaluate
 from tasks.clock_tsne import clock_tsne_evaluate
+from tasks.fragment_segmentation import fragment_segmentation_evaluate
 
 TASKS = {
     "knn": "k-NN",
@@ -33,6 +34,7 @@ TASKS = {
     "finetune": "Fine-tune",
     "color_tsne": "Color t-SNE",
     "clock_tsne": "Clock t-SNE",
+    "fragment_seg": "Fragment Segmentation",
 }
 
 OUTPUT_ROOT = Path(__file__).resolve().parent / "output"
@@ -346,6 +348,18 @@ def main():
         )
         elapsed = time.time() - start
         print(f"\nDone in {elapsed:.1f}s")
+        return
+
+    if args.task == "fragment_seg":
+        out_dir = OUTPUT_ROOT / "fragment_segmentation"
+        start = time.time()
+        result = fragment_segmentation_evaluate(
+            encoder_names, out_dir,
+            device=args.device,
+            data_root=args.data_root,
+        )
+        elapsed = time.time() - start
+        print(f"\nDone in {elapsed:.1f}s — saved {len(result.get('plots', []))} figures")
         return
 
     # Expand --layer all: detect block layers per encoder and iterate
